@@ -12,7 +12,7 @@ from typing import Callable, Iterable
 
 METRICS = ("lines", "code", "files")
 
-# Only used without git; in a git repo, .gitignore decides.
+# Only used outside git repos (or with --no-git); inside a repo, .gitignore decides.
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".next", ".nuxt", ".turbo", ".cache",
     "dist", "build", "coverage", ".venv", "venv", "__pycache__", "vendor",
@@ -126,37 +126,56 @@ def exclude_matcher(patterns: Iterable[str]) -> Callable[[str], bool]:
     return is_excluded
 
 
-def list_files(root: str, use_git: bool = True) -> list[str]:
-    """Candidate file paths relative to root."""
-    if use_git:
-        try:
-            out = subprocess.run(
-                ["git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                capture_output=True,
-                check=True,
-            ).stdout
-        except (OSError, subprocess.CalledProcessError):
-            pass
-        else:
-            paths = []
-            for p in sorted({os.fsdecode(p).rstrip("/") for p in out.split(b"\0")} - {"", "."}):
-                full = os.path.join(root, p)
-                if os.path.isdir(full) and not os.path.islink(full):
-                    # A submodule or nested repo: git lists only the directory, not its files.
-                    paths.extend(f"{p}/{q}" for q in list_files(full))
-                else:
-                    paths.append(p)
-            if paths:
-                return paths
-        # Not a repo, or git lists nothing here (e.g. a folder in .gitignore): walk it.
+# phase ("listing" or "counting"), files done, total (None while listing), current path
+Progress = Callable[[str, int, int | None, str], None]
 
-    paths = []
+
+def list_files(root: str, use_git: bool = True, progress: Progress | None = None) -> list[str]:
+    """Candidate file paths relative to root. Git repos inside root are listed by git."""
+    found: list[str] = []
+    _list_into(found, root, "", use_git, progress)
+    return found
+
+
+def _git_files(root: str) -> list[str]:
+    """What git lists in root (directories for submodules and nested repos); [] if not a repo."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    # An uninitialized submodule lists itself as "./".
+    return sorted({os.fsdecode(p).rstrip("/") for p in out.split(b"\0")} - {"", "."})
+
+
+def _list_into(found: list[str], root: str, prefix: str, use_git: bool, progress: Progress | None) -> None:
+    entries = _git_files(root) if use_git else []
+    if entries:
+        for p in entries:
+            full = os.path.join(root, p)
+            if os.path.isdir(full) and not os.path.islink(full):
+                _list_into(found, full, f"{prefix}{p}/", use_git, progress)
+            else:
+                found.append(prefix + p)
+        if progress:
+            progress("listing", len(found), None, prefix)
+        return
+
+    # Not a repo, or git lists nothing here (e.g. a folder in .gitignore): walk it.
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         rel = os.path.relpath(dirpath, root)
-        prefix = "" if rel == "." else rel.replace(os.sep, "/") + "/"
-        paths.extend(prefix + f for f in sorted(filenames))
-    return paths
+        here = prefix + ("" if rel == "." else rel.replace(os.sep, "/") + "/")
+        if use_git and dirpath != root and os.path.exists(os.path.join(dirpath, ".git")):
+            dirnames[:] = []
+            _list_into(found, dirpath, here, use_git, progress)
+            continue
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        found.extend(here + f for f in sorted(filenames))
+        if progress:
+            progress("listing", len(found), None, here)
 
 
 def _count_regular(path: str) -> tuple[int, int] | None | bool:
@@ -186,13 +205,13 @@ def scan(
     root_dir: str,
     excludes: Iterable[str] = (),
     use_git: bool = True,
-    progress: Callable[[int, int], None] | None = None,
+    progress: Progress | None = None,
 ) -> ScanResult:
     root_dir = os.path.abspath(root_dir)
     if not os.path.isdir(root_dir):
         raise NotADirectoryError(root_dir)
     is_excluded = exclude_matcher(excludes)
-    kept = [p for p in list_files(root_dir, use_git) if not is_excluded(p)]
+    kept = [p for p in list_files(root_dir, use_git, progress) if not is_excluded(p)]
 
     root = Node(root_dir, is_dir=True)
     skipped = 0
@@ -204,10 +223,8 @@ def scan(
                 skipped += 1
             elif result is not False:
                 _insert(root, relpath, *result)
-            if progress and i % 500 == 0:
-                progress(i, len(kept))
-    if progress:
-        progress(len(kept), len(kept))
+            if progress:
+                progress("counting", i, len(kept), relpath)
     return ScanResult(root, skipped)
 
 

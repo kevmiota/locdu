@@ -18,7 +18,7 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 sys.path.insert(0, SRC)
 
 from locdu.cli import main  # noqa: E402
-from locdu.output import fmt, printable, render_text, to_ncdu  # noqa: E402
+from locdu.output import fmt, printable, progress_text, render_text, throttle, to_ncdu  # noqa: E402
 import locdu.scan  # noqa: E402
 from locdu.scan import DEFAULT_EXCLUDES, by_file_type, count_lines, exclude_matcher, scan  # noqa: E402
 
@@ -153,6 +153,28 @@ class Scan(Tmp):
         r = scan(os.path.join(self.tmp, "dist"))
         self.assertEqual(r.root.find("app.js").lines, 2)
 
+    @unittest.skipUnless(shutil.which("git"), "git not installed")
+    def test_repos_inside_a_plain_folder_follow_their_gitignore(self):
+        write(self.tmp, "plain/a.ts", b"a\nb\n")
+        write(self.tmp, "repo/src.ts", b"x\n")
+        write(self.tmp, "repo/.gitignore", b"out/\n")
+        write(self.tmp, "repo/out/gen.js", b"g\n" * 100)
+        subprocess.run(["git", "init", "-q", os.path.join(self.tmp, "repo")], check=True)
+        r = scan(self.tmp)
+        self.assertIsNone(r.root.find("repo/out"))
+        self.assertEqual((r.root.find("plain/a.ts").lines, r.root.find("repo/src.ts").lines), (2, 1))
+        self.assertEqual(scan(self.tmp, use_git=False).root.find("repo/out/gen.js").lines, 100)
+
+    def test_progress_lists_then_counts(self):
+        self.make_project()
+        calls = []
+        scan(self.tmp, DEFAULT_EXCLUDES, use_git=False, progress=lambda *a: calls.append(a))
+        phases = [c[0] for c in calls]
+        self.assertEqual(phases, sorted(phases, key=["listing", "counting"].index))
+        self.assertTrue(all(c[2] is None for c in calls if c[0] == "listing"))
+        last = calls[-1]
+        self.assertEqual((last[0], last[1]), ("counting", last[2]))
+
     def test_not_a_directory(self):
         with self.assertRaises(NotADirectoryError):
             scan(os.path.join(self.tmp, "missing"))
@@ -214,6 +236,22 @@ class Output(Tmp):
 
     def test_printable_keeps_valid_unicode(self):
         self.assertEqual(printable("Grüezi ✓"), "Grüezi ✓")
+
+    def test_progress_text_cuts_long_paths_at_the_front(self):
+        text = progress_text("counting", 50, 200, "very/long/path/" * 10 + "file.ts", 60)
+        self.assertEqual(len(text), 60)
+        self.assertTrue(text.startswith("counting lines: 50/200 files (25%)  ..."))
+        self.assertTrue(text.endswith("/file.ts"))
+        self.assertEqual(progress_text("listing", 1234, None, "src/", 80), "listing files: 1'234 found  src/")
+
+    def test_throttle(self):
+        calls = []
+        throttle(calls.append, interval=3600)(1)
+        self.assertEqual(calls, [])
+        fast = throttle(calls.append, interval=0)
+        fast(1)
+        fast(2)
+        self.assertEqual(calls, [1, 2])
 
     def test_ncdu_format(self):
         data = to_ncdu(self.root)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+from typing import Callable
 
 from . import __version__
 from .scan import Node
@@ -15,6 +16,36 @@ def fmt(n: int) -> str:
 def printable(text: str) -> str:
     """Show bytes of non-UTF-8 file names as \\xNN instead of failing to encode them."""
     return os.fsencode(text).decode("utf-8", "backslashreplace")
+
+
+def progress_text(phase: str, done: int, total: int | None, path: str, width: int) -> str:
+    """One status line of at most width characters; a long path is cut at the front."""
+    if total is None:
+        head = f"listing files: {fmt(done)} found"
+    else:
+        pct = 100 * done // total if total else 100
+        head = f"counting lines: {fmt(done)}/{fmt(total)} files ({pct}%)"
+    path = printable(path)
+    room = width - len(head) - 2
+    if room < 8:
+        return head[:width]
+    if len(path) > room:
+        path = "..." + path[-(room - 3):]
+    return f"{head}  {path}"
+
+
+def throttle(fn: Callable[..., None], interval: float = 0.1) -> Callable[..., None]:
+    """Call fn at most once per interval; the first call waits one interval, so quick scans show nothing."""
+    last = time.monotonic()
+
+    def throttled(*args) -> None:
+        nonlocal last
+        now = time.monotonic()
+        if now - last >= interval:
+            last = now
+            fn(*args)
+
+    return throttled
 
 
 def sorted_children(node: Node, metric: str) -> list[Node]:
