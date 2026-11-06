@@ -9,8 +9,8 @@ import subprocess
 from typing import Callable
 
 from . import __version__
-from .output import fmt, printable
-from .scan import METRICS, Node, ScanResult, by_file_type, count_lines
+from .output import fmt, printable, progress_text, throttle
+from .scan import METRICS, Node, Progress, ScanResult, by_file_type, count_lines
 
 METRIC_LABEL = {"lines": "lines", "code": "code lines", "files": "files"}
 
@@ -54,7 +54,7 @@ def clip(text: str, width: int) -> str:
 
 
 class App:
-    def __init__(self, scr, result: ScanResult, rescan: Callable[[], ScanResult], metric: str):
+    def __init__(self, scr, result: ScanResult, rescan: Callable[[Progress], ScanResult], metric: str):
         self.scr = scr
         self.rescan = rescan
         self.metric = metric
@@ -296,7 +296,13 @@ class App:
         h, w = self.scr.getmaxyx()
         put(self.scr, h - 1, 0, " rescanning...".ljust(w), curses.A_REVERSE)
         self.scr.refresh()
-        self.load(self.rescan(), path)
+
+        def show(phase: str, done: int, total: int | None, current: str) -> None:
+            h, w = self.scr.getmaxyx()
+            put(self.scr, h - 1, 0, f" {progress_text(phase, done, total, current, w - 2)}".ljust(w), curses.A_REVERSE)
+            self.scr.refresh()
+
+        self.load(self.rescan(throttle(show)), path)
         self.hidden = []
         for rel in hidden:
             node = self.root.find(rel)
@@ -350,7 +356,7 @@ class App:
                 self.modal("locdu help", HELP)
 
 
-def run(result: ScanResult, rescan: Callable[[], ScanResult], metric: str = "lines") -> None:
+def run(result: ScanResult, rescan: Callable[[Progress], ScanResult], metric: str = "lines") -> None:
     os.environ.setdefault("ESCDELAY", "25")
     locale.setlocale(locale.LC_ALL, "")
     curses.wrapper(lambda scr: App(scr, result, rescan, metric).loop())

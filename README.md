@@ -36,9 +36,10 @@ Without pip, from a clone (needs only `python3`):
 ## What gets counted
 
 - In a git repo: the files git knows about, tracked and untracked, minus `.gitignore`,
-  including nested repos and submodules. Elsewhere, in a folder git ignores, or with
-  `--no-git`: everything except `node_modules`, `dist`, `build`, `.venv`, `vendor` and
-  similar below DIR.
+  including nested repos and submodules. A plain folder (or one git ignores) is walked,
+  skipping `node_modules`, `dist`, `build`, `.venv`, `vendor` and similar; every git repo
+  found on the way is listed by git again, so a folder full of repos honours each
+  repo's `.gitignore`. `--no-git` walks everything.
 - Skipped by default: lockfiles, `*.min.js`, `*.min.css`, `*.map`
   (`--no-default-excludes` counts them). Add your own with `-x`, repeatable:
   a name or glob matches anywhere (`-x docs -x '*.md'`), a path matches relative
@@ -47,6 +48,8 @@ Without pip, from a clone (needs only `python3`):
   are skipped.
 - `lines` = all lines, `code` = non-blank lines. Comments count as code; use
   `scc` or `tokei` if you need comments separated.
+
+While scanning, a status line shows the phase, the file count and the current path.
 
 ## Keys
 
